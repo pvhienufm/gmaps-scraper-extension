@@ -38,6 +38,22 @@ Config is remembered between runs via `chrome.storage.local`.
 Details mode is slow (~2–4 s/place) and takes over the tab while running; keep
 `Max results` modest.
 
+## Export to Google Sheets
+
+One-time setup with `apps-script.gs`:
+
+1. Open the target Google Sheet → **Extensions → Apps Script**.
+2. Paste the whole `apps-script.gs` file, then **Deploy → New deployment → Web
+   app**: *Execute as: Me*, *Who has access: Anyone*. Authorise and copy the
+   `/exec` URL.
+3. Paste that URL into the panel's **Google Sheet (Apps Script URL)** field and
+   click **Send to Google Sheet** — it appends the filtered rows (header row
+   written once).
+
+The webhook URL is a shared secret (anyone with it can append rows). Keep it
+private; redeploy to rotate. The POST is done from the background worker to dodge
+CORS.
+
 ## Permissions
 
 - `storage` — remembers your panel config between runs.
@@ -62,8 +78,6 @@ update the selectors near the top of `content.js`: feed uses `Nv2PK`, `hfpxzc`,
 
 ## Next steps
 
-- **Google Sheets export** — push results straight into a sheet (OAuth via
-  `chrome.identity`, or an Apps Script webhook).
 - **Results preview table** + select/deselect rows before export.
 - **Persist results** across tab reloads (currently config persists, rows don't).
 - **Reviews & photos** scraping for directory use.

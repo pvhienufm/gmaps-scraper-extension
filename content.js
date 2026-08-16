@@ -44,6 +44,7 @@
     onlyWithPhone: false,
     fields: Object.fromEntries(COLUMNS.map((c) => [c, true])),
     format: "csv",
+    sheetUrl: "",
   };
 
   const state = { running: false, stop: false, rows: [] };
@@ -290,6 +291,27 @@
     return JSON.stringify(rows.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]]))), null, 2);
   };
 
+  const toSheetPayload = (rows) => {
+    const cols = selectedFields();
+    return { columns: cols, rows: rows.map((r) => cols.map((c) => r[c])) };
+  };
+
+  async function pushToSheet(rows) {
+    if (!cfg.sheetUrl) return status("Set the Apps Script webhook URL first");
+    status("Sending to Google Sheet…");
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: "pushSheet",
+        url: cfg.sheetUrl,
+        payload: toSheetPayload(rows),
+      });
+      status(res?.ok ? `✓ Added ${res.added} rows to Sheet` : `Sheet error: ${res?.error || "failed"}`);
+    } catch (e) {
+      status("Sheet error — see console");
+      console.error("[gmaps-scraper]", e);
+    }
+  }
+
   const downloadFile = (text, ext, mime) => {
     const blob = new Blob([ext === "csv" ? "﻿" + text : text], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -451,6 +473,20 @@
     });
     exportRow.append(csvBtn, jsonBtn, copyBtn);
     body.append(exportRow);
+
+    // Google Sheets (Apps Script webhook)
+    body.append(label("Google Sheet (Apps Script URL)"));
+    const sheetInput = mk("input");
+    sheetInput.type = "text";
+    sheetInput.placeholder = "https://script.google.com/macros/s/…/exec";
+    sheetInput.value = cfg.sheetUrl || "";
+    css(sheetInput, { width: "100%", boxSizing: "border-box", padding: "5px 6px", border: "1px solid #dadce0", borderRadius: "6px", fontSize: "11px" });
+    sheetInput.oninput = () => { cfg.sheetUrl = sheetInput.value.trim(); saveCfg(); };
+    body.append(sheetInput);
+    const sheetBtn = btn("▶ Send to Google Sheet", "#0f9d58");
+    css(sheetBtn, { width: "100%", marginTop: "6px" });
+    sheetBtn.onclick = guardExport(() => pushToSheet(state.rows));
+    body.append(sheetBtn);
 
     document.body.appendChild(panel);
   }

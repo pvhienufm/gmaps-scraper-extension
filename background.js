@@ -100,11 +100,43 @@ async function enrichSite(url) {
   };
 }
 
+// POST scraped rows to a Google Apps Script web-app webhook. Done from the
+// worker so it isn't blocked by CORS and follows the script.google.com →
+// googleusercontent.com redirect. text/plain avoids a CORS preflight the Apps
+// Script endpoint wouldn't answer.
+async function pushSheet(url, payload) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+    });
+    const text = await res.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* non-JSON response */
+    }
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true, added: data.added ?? payload.rows.length };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "enrichSite") {
     enrichSite(msg.url)
       .then(sendResponse)
       .catch(() => sendResponse({ email: "", socials: "" }));
     return true; // keep the channel open for the async response
+  }
+  if (msg && msg.type === "pushSheet") {
+    pushSheet(msg.url, msg.payload)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
   }
 });
