@@ -8,7 +8,7 @@
   },
   "permissions": ["storage", "identity"],
   "oauth2": {
-    "client_id": "REPLACE_WITH_YOUR_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "client_id": "528425261403-bvqafhi40mj48nsranvnpduo8gnes2gd.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/drive.file"
