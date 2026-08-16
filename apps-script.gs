@@ -29,10 +29,17 @@ function doPost(e) {
     if (sheet.getLastRow() === 0 && columns.length) {
       sheet.appendRow(columns);
     }
-    if (rows.length && columns.length) {
+    // Neutralise formula injection (=, @, tab, CR) before setValues.
+    var safe = rows.map(function (r) {
+      return r.map(function (v) {
+        v = v == null ? "" : String(v);
+        return /^[=@\t\r]/.test(v) ? "'" + v : v;
+      });
+    });
+    if (safe.length && columns.length) {
       sheet
-        .getRange(sheet.getLastRow() + 1, 1, rows.length, columns.length)
-        .setValues(rows);
+        .getRange(sheet.getLastRow() + 1, 1, safe.length, columns.length)
+        .setValues(safe);
     }
     return json({ ok: true, added: rows.length });
   } catch (err) {

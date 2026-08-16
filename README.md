@@ -1,18 +1,17 @@
-# GMaps Scraper (local prototype)
+# GMaps Scraper
 
-Minimal Manifest V3 Chrome extension that scrapes the **visible Google Maps
-search results feed** and exports a CSV. Runs entirely in your own browser tab —
-no server, no API key, uses your own IP/session.
+Manifest V3 Chrome extension that scrapes **Google Maps business listings** and
+exports them to CSV, JSON, clipboard, or Google Sheets — with optional website,
+email and social enrichment. Runs entirely in your own browser tab: no server,
+no API key, uses your own IP/session.
 
-Ports the extraction logic from the Playwright scraper in
-`~/vietnam-directory/scraper/google_maps.py` (feed scroll loop, rating/review
-parsing, lat/lng from the place URL).
+> **Demo:** _add a short GIF here — search → 📍 → scrape → filter → export._
 
 ## Load it locally
 
 1. Open `chrome://extensions`
 2. Toggle **Developer mode** (top-right)
-3. Click **Load unpacked** → select this folder (`~/gmaps-scraper-extension`)
+3. Click **Load unpacked** → select this folder
 4. Go to https://www.google.com/maps and search, e.g. `hotels in Da Lat`
 5. Click the round **📍 button** at the bottom-right to open the panel
 
@@ -57,6 +56,11 @@ it, the developer configures an OAuth client once:
 5. Reload the extension. (Publishing to the Web Store later gives a new ID —
    update the OAuth client then.)
 
+> The `oauth2.client_id` committed in `manifest.json` is the author's **demo
+> config** and is bound to the author's extension ID — it will not work for a
+> fork. If you fork this, create your own OAuth client (steps above) and replace
+> it. (An OAuth client ID is not a secret; the client has no secret.)
+
 ### Option B — Apps Script webhook (advanced, under the "Advanced" toggle)
 
 Zero OAuth, but each user must deploy `apps-script.gs`:
@@ -93,6 +97,14 @@ update the selectors near the top of `content.js`: feed uses `Nv2PK`, `hfpxzc`,
 
 - **Results preview table** + select/deselect rows before export.
 - **Persist results** across tab reloads (currently config persists, rows don't).
+- Narrow `<all_urls>` to an **optional** host permission requested only when
+  email enrichment is enabled.
 - **Reviews & photos** scraping for directory use.
 - Package for the Chrome Web Store (data-extraction extensions face review; keep a
   sideload `.zip` / Edge fallback).
+
+## Responsible use & legal
+
+Scraping Google Maps may conflict with Google's Terms of Service; keep volumes
+low and use collected data responsibly. See [`PRIVACY.md`](PRIVACY.md). Licensed
+under [MIT](LICENSE).

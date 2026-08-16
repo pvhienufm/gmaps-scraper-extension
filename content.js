@@ -5,9 +5,8 @@
 // open, enrich with details + emails, filter, and export to CSV/JSON/clipboard,
 // a Google Sheet via OAuth ("Sign in with Google"), or an Apps Script webhook.
 //
-// Selectors mirror the Playwright scraper in ~/vietnam-directory/scraper/
-// google_maps.py. Google's markup is obfuscated and changes periodically — if
-// fields go blank, refresh the class names / data-item-id hooks below.
+// Google's markup is obfuscated and changes periodically — if fields go blank,
+// refresh the class names / data-item-id hooks below.
 
 (() => {
   "use strict";
@@ -32,6 +31,23 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const blankRow = () => Object.fromEntries(COLUMNS.map((c) => [c, ""]));
+
+  // Vietnamese Maps shows ratings as "4,5" and review counts as "1.234" or the
+  // abbreviated "1,2 N" (nghìn) / "1,2 tr" (triệu). Normalise both to plain
+  // numbers so filters and downstream parsing are locale-safe.
+  const parseRating = (t) => {
+    const m = String(t || "").replace(",", ".").match(/\d+(?:\.\d+)?/);
+    return m ? m[0] : "";
+  };
+  const parseReviews = (t) => {
+    const s = String(t || "").replace(/[()]/g, "").trim();
+    const mult = /\bN\b|nghìn|K\b/i.test(s) ? 1000 : /\btr\b|triệu|\bM\b/i.test(s) ? 1e6 : 1;
+    if (mult > 1) {
+      const n = parseFloat(s.replace(",", ".").replace(/[^\d.]/g, ""));
+      return n ? String(Math.round(n * mult)) : "";
+    }
+    return s.replace(/[^\d]/g, "");
+  };
 
   const DEFAULTS = {
     maxResults: 100,
@@ -102,8 +118,8 @@
     const { category, price, address } = parseInfo(card);
     Object.assign(row, {
       name,
-      rating: (card.querySelector("span.MW4etd")?.textContent || "").trim(),
-      reviews: (card.querySelector("span.UY7F9")?.textContent || "").replace(/[^\d]/g, ""),
+      rating: parseRating(card.querySelector("span.MW4etd")?.textContent),
+      reviews: parseReviews(card.querySelector("span.UY7F9")?.textContent),
       category, price, address,
       website: card.querySelector('a[data-value="Website"]')?.href || "",
       lat, lng, url,
@@ -124,17 +140,19 @@
     return rows;
   };
 
-  async function autoScroll(max, onProgress) {
+  // `accumulate` merges the currently-visible rows into a caller-owned store and
+  // returns the running unique total. Google virtualises the feed (offscreen
+  // cards get unloaded), so we must accumulate across scrolls, not re-read once.
+  async function autoScroll(max, accumulate) {
     const feed = document.querySelector(FEED);
     if (!feed) return;
     let stagnant = 0;
     for (let i = 0; i < 60 && !state.stop; i++) {
-      const before = collect().length;
-      onProgress(before);
+      const before = accumulate();
       if (before >= max) break;
       feed.scrollBy(0, feed.scrollHeight);
       await sleep(1600);
-      const after = collect().length;
+      const after = accumulate();
       if (after === before) {
         if (++stagnant >= 3) break;
       } else stagnant = 0;
@@ -246,10 +264,12 @@
         const d = extractDetail();
         for (const k of Object.keys(d)) if (d[k]) row[k] = d[k];
         if (withEmail) await enrichEmail(row);
+        // Only navigate back when we actually opened a place — otherwise a failed
+        // click/lookup would history.back() the user right out of Maps.
+        history.back();
+        await waitFor(() => document.querySelector(FEED));
+        await sleep(600);
       }
-      history.back();
-      await waitFor(() => document.querySelector(FEED));
-      await sleep(600);
     }
   }
 
@@ -263,6 +283,11 @@
     row.url = location.href;
     const { lat, lng } = parseCoords(location.href);
     row.lat = lat; row.lng = lng;
+    const rblock = document.querySelector("div.F7nice");
+    if (rblock) {
+      row.rating = parseRating(rblock.querySelector('span[aria-hidden="true"]')?.textContent || rblock.textContent);
+      row.reviews = parseReviews(rblock.querySelector("span[aria-label]")?.getAttribute("aria-label") || rblock.textContent);
+    }
     const d = extractDetail();
     for (const k of Object.keys(d)) if (d[k]) row[k] = d[k];
     if (cfg.fetchEmails) await enrichEmail(row);
@@ -283,8 +308,13 @@
 
   const selectedFields = () => COLUMNS.filter((c) => cfg.fields[c]);
 
+  // Neutralise spreadsheet formula injection by prefixing a quote. We only guard
+  // the genuinely executable leads (=, @, tab, CR) — NOT + or -, so phone numbers
+  // (+84…) and negative coordinates (-33.8…) stay clean and numeric.
+  const deFormula = (s) => (/^[=@\t\r]/.test(s) ? "'" + s : s);
+
   const csvCell = (v) => {
-    const s = String(v ?? "");
+    const s = deFormula(String(v ?? ""));
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const toCSV = (rows) => {
@@ -297,7 +327,11 @@
   };
   const toSheetPayload = (rows) => {
     const cols = selectedFields();
-    return { columns: cols, rows: rows.map((r) => cols.map((c) => r[c])), title: `GMaps export ${new Date().toLocaleString()}` };
+    return {
+      columns: cols,
+      rows: rows.map((r) => cols.map((c) => deFormula(String(r[c] ?? "")))),
+      title: `GMaps export ${new Date().toLocaleString()}`,
+    };
   };
 
   const downloadFile = (text, ext, mime) => {
@@ -356,13 +390,17 @@
     setProgress(0);
     try {
       if (document.querySelector(FEED)) {
-        // list flow
+        // list flow — accumulate unique rows (by URL) across scrolls
         status("Scrolling results…");
-        await autoScroll(cfg.maxResults, (n) => {
-          status(`Scrolling… found ${n}`);
-          setProgress((n / cfg.maxResults) * 100);
-        });
-        let rows = collect().slice(0, cfg.maxResults);
+        const acc = new Map();
+        const accumulate = () => {
+          for (const row of collect()) if (!acc.has(row.url)) acc.set(row.url, row);
+          status(`Scrolling… found ${acc.size}`);
+          setProgress((acc.size / cfg.maxResults) * 100);
+          return acc.size;
+        };
+        await autoScroll(cfg.maxResults, accumulate);
+        let rows = [...acc.values()].slice(0, cfg.maxResults);
         if (cfg.fetchDetails && !state.stop) {
           await enrich(rows, (i, n, name) => {
             status(`Enriching ${i}/${n}: ${name.slice(0, 24)}`);
