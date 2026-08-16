@@ -14,7 +14,7 @@ parsing, lat/lng from the place URL).
 2. Toggle **Developer mode** (top-right)
 3. Click **Load unpacked** → select this folder (`~/gmaps-scraper-extension`)
 4. Go to https://www.google.com/maps and search, e.g. `hotels in Da Lat`
-5. Use the **config panel** that appears top-left
+5. Click the round **📍 button** at the bottom-right to open the panel
 
 Columns available: name, rating, reviews, category, price, address, phone,
 website, email, socials, hours, plus_code, lat, lng, url.
@@ -30,29 +30,42 @@ website, email, socials, hours, plus_code, lat, lng, url.
 - **Filters** — min rating, min reviews, only-with-website, **only WITHOUT
   website** (lead-gen: businesses to sell a site to), only-with-phone.
 - **Export fields** — tick which columns land in the export.
-- **Start / Stop** — Stop halts scrolling/enrichment mid-run.
+- **Start / Stop** — a progress bar + step text show scrolling / enriching
+  (`i/n` + place name); Stop halts mid-run.
 - **Export** — CSV / JSON download or Copy CSV to clipboard, on the filtered rows.
 
-Config is remembered between runs via `chrome.storage.local`.
-
-Details mode is slow (~2–4 s/place) and takes over the tab while running; keep
-`Max results` modest.
+Works on both a **search results list** and a **single place** you have open
+(no list needed). Config is remembered via `chrome.storage.local`. Details mode is
+slow (~2–4 s/place) and takes over the tab; keep `Max results` modest.
 
 ## Export to Google Sheets
 
-One-time setup with `apps-script.gs`:
+### Option A — "Sign in with Google" (best for end users, one-time dev setup)
 
-1. Open the target Google Sheet → **Extensions → Apps Script**.
-2. Paste the whole `apps-script.gs` file, then **Deploy → New deployment → Web
-   app**: *Execute as: Me*, *Who has access: Anyone*. Authorise and copy the
-   `/exec` URL.
-3. Paste that URL into the panel's **Google Sheet (Apps Script URL)** field and
-   click **Send to Google Sheet** — it appends the filtered rows (header row
-   written once).
+The green **Sign in with Google → Sheet** button creates a new spreadsheet in the
+user's Drive and opens it — the user just consents, no technical steps. To enable
+it, the developer configures an OAuth client once:
 
-The webhook URL is a shared secret (anyone with it can append rows). Keep it
-private; redeploy to rotate. The POST is done from the background worker to dodge
-CORS.
+1. Load the extension; copy its **ID** from `chrome://extensions` (stable while
+   loaded from the same folder path).
+2. In Google Cloud Console (a project with **Google Sheets API** + **Drive API**
+   enabled): *APIs & Services → Credentials → Create OAuth client ID →
+   Application type: **Chrome Extension*** → paste the extension ID.
+3. Copy the client ID into `manifest.json` → `oauth2.client_id`.
+4. *OAuth consent screen*: add the two scopes and add your Google account under
+   **Test users** (needed while the app is unverified).
+5. Reload the extension. (Publishing to the Web Store later gives a new ID —
+   update the OAuth client then.)
+
+### Option B — Apps Script webhook (advanced, under the "Advanced" toggle)
+
+Zero OAuth, but each user must deploy `apps-script.gs`:
+
+1. Open the target Sheet → **Extensions → Apps Script**, paste `apps-script.gs`.
+2. **Deploy → New deployment → Web app**: *Execute as: Me*, *Who has access:
+   Anyone*. Copy the `/exec` URL.
+3. Paste it into the panel's **Advanced → Apps Script webhook** field, click
+   **Send to webhook**. The URL is a shared secret; keep it private.
 
 ## Permissions
 

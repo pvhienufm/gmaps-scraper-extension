@@ -126,6 +126,49 @@ async function pushSheet(url, payload) {
   }
 }
 
+// "Sign in with Google" export: create a new spreadsheet in the user's Drive
+// and write the rows. Needs an OAuth client configured in manifest.oauth2 (see
+// README) — until then getAuthToken rejects and the UI shows a setup hint.
+function getAuthToken(interactive) {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive }, (token) => {
+      if (chrome.runtime.lastError || !token) {
+        reject(new Error("auth: " + (chrome.runtime.lastError?.message || "no token")));
+      } else {
+        resolve(token);
+      }
+    });
+  });
+}
+
+async function sheetsExport(payload) {
+  let token;
+  try {
+    token = await getAuthToken(true);
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  try {
+    const create = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ properties: { title: payload.title || "GMaps Scraper export" } }),
+    });
+    if (!create.ok) return { ok: false, error: `create ${create.status}` };
+    const ss = await create.json();
+    const values = [payload.columns, ...payload.rows];
+    const append = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${ss.spreadsheetId}/values/A1:append?valueInputOption=RAW`,
+      { method: "POST", headers, body: JSON.stringify({ values }) }
+    );
+    if (!append.ok) return { ok: false, error: `append ${append.status}` };
+    return { ok: true, url: ss.spreadsheetUrl, added: payload.rows.length };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "enrichSite") {
     enrichSite(msg.url)
@@ -135,6 +178,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg && msg.type === "pushSheet") {
     pushSheet(msg.url, msg.payload)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg && msg.type === "sheetsExport") {
+    sheetsExport(msg.payload)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
