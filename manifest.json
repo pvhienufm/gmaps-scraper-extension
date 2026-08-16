@@ -1,8 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "GMaps Scraper (local)",
-  "version": "0.5.0",
+  "name": "GMaps Scraper",
+  "version": "1.0.0",
   "description": "Scrape Google Maps search results (name, rating, reviews, category, address, phone, website, hours) and enrich with emails/socials from each business website. Config panel: result limit, field selection, lead-gen filters, CSV/JSON/clipboard export. Runs in your own browser tab.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "GMaps Scraper — open Google Maps and use the 📍 button",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "background": {
     "service_worker": "background.js"
   },
