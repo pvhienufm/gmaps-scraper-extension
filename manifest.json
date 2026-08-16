@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "GMaps Scraper (local)",
+  "version": "0.2.1",
+  "description": "Scrape Google Maps search results (name, rating, reviews, category, address, phone, website, hours) and enrich with emails/socials from each business website. Runs in your own browser tab.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/maps/*",
+        "https://maps.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
