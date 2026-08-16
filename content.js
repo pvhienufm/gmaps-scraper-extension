@@ -1,11 +1,10 @@
 // GMaps Scraper — content script.
 //
-// Runs inside the user's own Google Maps tab. Two modes:
-//   1. Fast    — scroll the results feed, read each card (name, rating,
-//                reviews, category, price, coords). One page, seconds.
-//   2. Details — additionally open each place to read the authoritative
-//                address, phone, website, hours, plus code from the detail
-//                panel's data-item-id buttons. Slower, hijacks the tab.
+// Runs inside the user's own Google Maps tab. Injects a config panel to pick
+// how many results, which fields, filters, and export format, then:
+//   - scrolls the results feed to lazy-load listings (fast fields), and
+//   - optionally opens each place for authoritative address/phone/website/
+//     hours/plus-code, and fetches emails/socials from the website.
 //
 // Selectors mirror the Playwright scraper in ~/vietnam-directory/scraper/
 // google_maps.py. Google's markup is obfuscated and changes periodically — if
@@ -23,32 +22,48 @@
   const PRICE_RE = /[₫$€£]|\d\s*[–-]\s*\d/;
   const HOURS_RE = /\b(Open|Closed|Closes|Opens|24 hours|Temporarily|Permanently)\b/i;
   const NAME_JUNK_RE = /\s*[·⋅]\s*(Visited link|Sponsored|Ad)\s*$/i;
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  const COLUMNS = [
-    "name",
-    "rating",
-    "reviews",
-    "category",
-    "price",
-    "address",
-    "phone",
-    "website",
-    "email",
-    "socials",
-    "hours",
-    "plus_code",
-    "lat",
-    "lng",
-    "url",
-  ];
-
-  // Websites that are really social pages — don't fetch them for email, just
-  // record the handle from the URL itself.
+  const DAY_RE = /(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)/g;
   const SOCIAL_HOST_RE = /(facebook|instagram|tiktok|youtube|zalo|linkedin)\./i;
 
+  const COLUMNS = [
+    "name", "rating", "reviews", "category", "price", "address", "phone",
+    "website", "email", "socials", "hours", "plus_code", "lat", "lng", "url",
+  ];
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const blankRow = () => Object.fromEntries(COLUMNS.map((c) => [c, ""]));
+
+  const DEFAULTS = {
+    maxResults: 100,
+    fetchDetails: true,
+    fetchEmails: true,
+    minRating: 0,
+    minReviews: 0,
+    onlyWithWebsite: false,
+    noWebsite: false,
+    onlyWithPhone: false,
+    fields: Object.fromEntries(COLUMNS.map((c) => [c, true])),
+    format: "csv",
+  };
+
+  const state = { running: false, stop: false, rows: [] };
+  let cfg = structuredClone(DEFAULTS);
+
+  const loadCfg = async () => {
+    try {
+      const saved = await chrome.storage.local.get("cfg");
+      if (saved.cfg) cfg = { ...DEFAULTS, ...saved.cfg, fields: { ...DEFAULTS.fields, ...saved.cfg.fields } };
+    } catch {
+      /* storage unavailable — use defaults */
+    }
+  };
+  const saveCfg = () => {
+    try {
+      chrome.storage.local.set({ cfg });
+    } catch {
+      /* ignore */
+    }
+  };
 
   // ---- feed extraction (fast) --------------------------------------------
 
@@ -57,35 +72,22 @@
     return m ? { lat: m[1], lng: m[2] } : { lat: "", lng: "" };
   };
 
-  // Read the meta lines of a card. The rating lives in its own .W4Efsd (drop
-  // it), the rest hold "Category · Price", a neighbourhood/address line, and an
-  // "Open · Closes 10 PM" line. Google mixes middot (·) and dot-operator (⋅).
   const parseInfo = (card) => {
     const lines = [
       ...new Set(
         [...card.querySelectorAll("div.W4Efsd")]
-          .filter(
-            (el) =>
-              !el.querySelector("div.W4Efsd") && !el.querySelector("span.MW4etd")
-          )
+          .filter((el) => !el.querySelector("div.W4Efsd") && !el.querySelector("span.MW4etd"))
           .map((el) => el.textContent.replace(/\s+/g, " ").trim())
           .filter(Boolean)
       ),
     ];
-    let category = "";
-    let price = "";
-    let address = "";
+    let category = "", price = "", address = "";
     for (const line of lines) {
       for (const seg of line.split(/[·⋅]/).map((s) => s.trim()).filter(Boolean)) {
-        if (!price && PRICE_RE.test(seg)) {
-          price = seg;
-        } else if (HOURS_RE.test(seg)) {
-          // skip open/closed status in fast mode
-        } else if (!category) {
-          category = seg;
-        } else if (!address && seg !== category) {
-          address = seg;
-        }
+        if (!price && PRICE_RE.test(seg)) price = seg;
+        else if (HOURS_RE.test(seg)) continue;
+        else if (!category) category = seg;
+        else if (!address && seg !== category) address = seg;
       }
     }
     return { category, price, address };
@@ -106,13 +108,9 @@
       name,
       rating: (card.querySelector("span.MW4etd")?.textContent || "").trim(),
       reviews: (card.querySelector("span.UY7F9")?.textContent || "").replace(/[^\d]/g, ""),
-      category,
-      price,
-      address,
+      category, price, address,
       website: card.querySelector('a[data-value="Website"]')?.href || "",
-      lat,
-      lng,
-      url,
+      lat, lng, url,
     });
     return row;
   };
@@ -130,13 +128,11 @@
     return rows;
   };
 
-  // Scroll the feed until it stops growing ("You've reached the end of the
-  // list"), mirroring the Playwright scroll loop.
   async function autoScroll(max, onProgress) {
     const feed = document.querySelector(FEED);
     if (!feed) return;
     let stagnant = 0;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60 && !state.stop; i++) {
       const before = collect().length;
       onProgress(before);
       if (before >= max) break;
@@ -145,9 +141,7 @@
       const after = collect().length;
       if (after === before) {
         if (++stagnant >= 3) break;
-      } else {
-        stagnant = 0;
-      }
+      } else stagnant = 0;
     }
   }
 
@@ -155,22 +149,17 @@
 
   const ariaValue = (sel) => {
     const el = document.querySelector(sel);
-    if (!el) return "";
-    const label = el.getAttribute("aria-label") || "";
+    const label = el?.getAttribute("aria-label") || "";
     if (!label) return "";
     return label.includes(":") ? label.split(":").slice(1).join(":").trim() : label.trim();
   };
 
-  // Google jams the weekly hours together with no separators and appends UI
-  // cruft ("Suggest new hours"). Split on weekday names and drop the cruft.
-  const DAY_RE = /(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)/g;
   const formatHours = (raw) => {
     if (!raw) return "";
     const cleaned = raw
       .replace(/[\uE000-\uF8FF]/g, "") // strip Google Material icon glyphs (PUA)
       .replace(/Suggest new hours/gi, " ")
       .replace(/Hide open hours.*$/i, " ")
-      .replace(/ /g, " ") // narrow no-break space inside times
       .replace(/\s+/g, " ")
       .trim();
     return cleaned
@@ -181,7 +170,6 @@
       .join("; ");
   };
 
-  // Price band shown in the detail header ("₫₫", "$$", or "₫100,000–200,000").
   const findPrice = (panel) => {
     for (const s of panel.querySelectorAll("span")) {
       const t = s.textContent.trim();
@@ -207,7 +195,7 @@
     return out;
   };
 
-  const waitFor = async (fn, timeout = 7000, step = 200) => {
+  const waitFor = async (fn, timeout = 8000, step = 200) => {
     const start = Date.now();
     while (Date.now() - start < timeout) {
       const v = fn();
@@ -217,8 +205,6 @@
     return null;
   };
 
-  // Feed virtualises: an anchor may unload after we navigate away. Re-find it
-  // by href, scrolling the feed to force a re-render if needed.
   async function locateAnchor(url) {
     const feed = document.querySelector(FEED);
     for (let i = 0; i < 8; i++) {
@@ -230,11 +216,10 @@
     return null;
   }
 
-  // Ask the background worker to fetch the website and pull emails/socials.
   async function enrichEmail(row) {
     if (!row.website) return;
     if (SOCIAL_HOST_RE.test(row.website)) {
-      row.socials = row.website; // the "website" is itself a social page
+      row.socials = row.website;
       return;
     }
     try {
@@ -244,23 +229,20 @@
         if (info.socials) row.socials = info.socials;
       }
     } catch {
-      /* worker unavailable — leave email blank */
+      /* worker unavailable */
     }
   }
 
-  // Open each place, enrich its row from the detail panel, fetch emails, go back.
   async function enrich(rows, onProgress, withEmail) {
-    for (let i = 0; i < rows.length; i++) {
+    for (let i = 0; i < rows.length && !state.stop; i++) {
       const row = rows[i];
       onProgress(i + 1, rows.length);
       const placeLoaded = () => {
         const h = document.querySelector("h1.DUwDvf");
         return h && h.textContent.trim() ? h : null;
       };
-      // Two attempts: the feed sometimes eats the first click before the panel
-      // navigates, which is what leaves rows with only the short feed address.
       let ok = null;
-      for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+      for (let attempt = 0; attempt < 2 && !ok && !state.stop; attempt++) {
         const anchor = await locateAnchor(row.url);
         if (!anchor) break;
         anchor.scrollIntoView({ block: "center" });
@@ -268,7 +250,7 @@
         ok = await waitFor(placeLoaded, 8000);
       }
       if (ok) {
-        await sleep(400); // let the info buttons render
+        await sleep(400);
         const d = extractDetail();
         for (const k of Object.keys(d)) if (d[k]) row[k] = d[k];
         if (withEmail) await enrichEmail(row);
@@ -279,106 +261,199 @@
     }
   }
 
-  // ---- CSV ----------------------------------------------------------------
+  // ---- filter + export ----------------------------------------------------
+
+  const applyFilters = (rows) =>
+    rows.filter((r) => {
+      if ((parseFloat(r.rating) || 0) < cfg.minRating) return false;
+      if ((parseInt(r.reviews) || 0) < cfg.minReviews) return false;
+      if (cfg.onlyWithWebsite && !r.website) return false;
+      if (cfg.noWebsite && r.website) return false;
+      if (cfg.onlyWithPhone && !r.phone) return false;
+      return true;
+    });
+
+  const selectedFields = () => COLUMNS.filter((c) => cfg.fields[c]);
 
   const csvCell = (v) => {
     const s = String(v ?? "");
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
-  const toCSV = (rows) =>
-    [COLUMNS.join(","), ...rows.map((r) => COLUMNS.map((c) => csvCell(r[c])).join(","))].join("\n");
+  const toCSV = (rows) => {
+    const cols = selectedFields();
+    return [cols.join(","), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(","))].join("\n");
+  };
 
-  const download = (rows) => {
-    const blob = new Blob(["﻿" + toCSV(rows)], { type: "text/csv;charset=utf-8;" });
+  const toJSON = (rows) => {
+    const cols = selectedFields();
+    return JSON.stringify(rows.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]]))), null, 2);
+  };
+
+  const downloadFile = (text, ext, mime) => {
+    const blob = new Blob([ext === "csv" ? "﻿" + text : text], { type: mime });
     const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     const a = document.createElement("a");
     a.href = url;
-    a.download = `gmaps-${stamp}.csv`;
+    a.download = `gmaps-${stamp}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ---- UI -----------------------------------------------------------------
+  // ---- run ----------------------------------------------------------------
 
-  const bar = document.createElement("div");
-  Object.assign(bar.style, {
-    position: "fixed",
-    top: "12px",
-    left: "50%",
-    transform: "translateX(-50%)",
-    zIndex: "99999",
-    display: "flex",
-    gap: "8px",
-  });
+  let statusEl, countEl;
+  const status = (t) => statusEl && (statusEl.textContent = t);
+  const setCount = () => countEl && (countEl.textContent = `${state.rows.length} rows`);
 
-  const mkButton = (label, bg) => {
-    const b = document.createElement("button");
-    Object.assign(b.style, {
-      padding: "10px 16px",
-      background: bg,
-      color: "#fff",
-      border: "none",
-      borderRadius: "8px",
-      font: "600 13px/1.2 system-ui, sans-serif",
-      boxShadow: "0 2px 8px rgba(0,0,0,.25)",
-      cursor: "pointer",
-    });
-    b.textContent = label;
-    return b;
-  };
-
-  const fast = mkButton("⬇ Scrape (fast)", "#1a73e8");
-  const full = mkButton("⬇ Scrape + details + emails", "#188038");
-  bar.append(fast, full);
-
-  let running = false;
-
-  const guard = async (btn, base, task) => {
-    if (running) return;
-    if (!document.querySelector(FEED)) {
-      btn.textContent = "Open a search first";
-      setTimeout(() => (btn.textContent = base), 2000);
-      return;
-    }
-    running = true;
-    fast.disabled = full.disabled = true;
-    const idle = btn.style.background;
-    btn.style.background = "#5f6368";
+  async function run() {
+    if (state.running) return;
+    if (!document.querySelector(FEED)) return status("Open a search first");
+    state.running = true;
+    state.stop = false;
     try {
-      await task((t) => (btn.textContent = t));
+      status("Scrolling…");
+      await autoScroll(cfg.maxResults, (n) => status(`Scrolling… ${n}`));
+      let rows = collect().slice(0, cfg.maxResults);
+      if (cfg.fetchDetails && !state.stop) {
+        await enrich(rows, (i, n) => status(`Enriching ${i}/${n}`), cfg.fetchEmails);
+      }
+      state.rows = applyFilters(rows);
+      setCount();
+      status(state.stop ? `Stopped — ${state.rows.length} rows` : `Done — ${state.rows.length} rows`);
     } catch (e) {
       console.error("[gmaps-scraper]", e);
-      btn.textContent = "Error — see console";
+      status("Error — see console");
     } finally {
-      running = false;
-      fast.disabled = full.disabled = false;
-      btn.style.background = idle;
-      setTimeout(() => (btn.textContent = base), 4000);
+      state.running = false;
     }
+  }
+
+  // ---- UI -----------------------------------------------------------------
+
+  const css = (el, styles) => Object.assign(el.style, styles);
+  const mk = (tag, styles, text) => {
+    const el = document.createElement(tag);
+    if (styles) css(el, styles);
+    if (text != null) el.textContent = text;
+    return el;
   };
 
-  fast.addEventListener("click", () =>
-    guard(fast, "⬇ Scrape (fast)", async (label) => {
-      await autoScroll(300, (n) => label(`Scrolling… ${n}`));
-      const rows = collect();
-      if (!rows.length) return label("No results found");
-      download(rows);
-      label(`✓ ${rows.length} rows → CSV`);
-    })
-  );
+  function buildPanel() {
+    const panel = mk("div", {
+      position: "fixed", top: "12px", left: "12px", zIndex: "99999",
+      width: "268px", maxHeight: "88vh", overflowY: "auto",
+      background: "#fff", color: "#202124", borderRadius: "10px",
+      boxShadow: "0 4px 20px rgba(0,0,0,.28)", padding: "12px 14px",
+      font: "13px/1.4 system-ui, sans-serif",
+    });
 
-  full.addEventListener("click", () =>
-    guard(full, "⬇ Scrape + details + emails", async (label) => {
-      await autoScroll(300, (n) => label(`Scrolling… ${n}`));
-      const rows = collect();
-      if (!rows.length) return label("No results found");
-      await enrich(rows, (i, n) => label(`Enriching ${i}/${n}`), true);
-      download(rows);
-      label(`✓ ${rows.length} rows → CSV`);
-    })
-  );
+    const title = mk("div", { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" });
+    title.append(mk("b", { fontSize: "14px" }, "GMaps Scraper"));
+    const collapse = mk("span", { cursor: "pointer", color: "#5f6368", padding: "0 4px" }, "▾");
+    title.append(collapse);
+    panel.append(title);
 
-  document.body.appendChild(bar);
+    const body = mk("div");
+    panel.append(body);
+    collapse.onclick = () => {
+      const hidden = body.style.display === "none";
+      body.style.display = hidden ? "" : "none";
+      collapse.textContent = hidden ? "▾" : "▸";
+    };
+
+    const label = (t) => mk("div", { fontWeight: "600", margin: "10px 0 4px" }, t);
+    const row = () => mk("div", { display: "flex", gap: "6px", alignItems: "center", margin: "3px 0" });
+
+    const numberInput = (key, min, step) => {
+      const inp = mk("input");
+      Object.assign(inp, { type: "number", value: cfg[key], min, step });
+      css(inp, { width: "64px", padding: "3px 5px", border: "1px solid #dadce0", borderRadius: "6px" });
+      inp.oninput = () => { cfg[key] = Number(inp.value) || 0; saveCfg(); };
+      return inp;
+    };
+
+    const checkbox = (key, text) => {
+      const wrap = row();
+      const inp = mk("input");
+      inp.type = "checkbox";
+      inp.checked = !!cfg[key];
+      inp.onchange = () => { cfg[key] = inp.checked; saveCfg(); };
+      wrap.append(inp, mk("span", null, text));
+      return wrap;
+    };
+
+    // limit + modes
+    const limitRow = row();
+    limitRow.append(mk("span", null, "Max results"), numberInput("maxResults", 1, 10));
+    body.append(limitRow);
+    body.append(checkbox("fetchDetails", "Fetch details (address, phone, hours)"));
+    body.append(checkbox("fetchEmails", "Fetch emails + socials from website"));
+
+    // filters
+    body.append(label("Filters"));
+    const rr = row();
+    rr.append(mk("span", null, "Min rating"), numberInput("minRating", 0, 0.1),
+              mk("span", null, "reviews"), numberInput("minReviews", 0, 10));
+    body.append(rr);
+    body.append(checkbox("onlyWithWebsite", "Only with website"));
+    body.append(checkbox("noWebsite", "Only WITHOUT website (sell them one)"));
+    body.append(checkbox("onlyWithPhone", "Only with phone"));
+
+    // fields
+    body.append(label("Export fields"));
+    const grid = mk("div", { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 8px" });
+    for (const c of COLUMNS) {
+      const wrap = mk("label", { display: "flex", gap: "5px", alignItems: "center", fontSize: "12px" });
+      const inp = mk("input");
+      inp.type = "checkbox";
+      inp.checked = !!cfg.fields[c];
+      inp.onchange = () => { cfg.fields[c] = inp.checked; saveCfg(); };
+      wrap.append(inp, mk("span", null, c));
+      grid.append(wrap);
+    }
+    body.append(grid);
+
+    // actions
+    const btn = (text, bg) => mk("button", {
+      flex: "1", padding: "8px 0", background: bg, color: "#fff", border: "none",
+      borderRadius: "7px", fontWeight: "600", cursor: "pointer",
+    }, text);
+
+    const runRow = mk("div", { display: "flex", gap: "6px", margin: "12px 0 6px" });
+    const startBtn = btn("▶ Start", "#1a73e8");
+    const stopBtn = btn("■ Stop", "#5f6368");
+    startBtn.onclick = run;
+    stopBtn.onclick = () => { state.stop = true; status("Stopping…"); };
+    runRow.append(startBtn, stopBtn);
+    body.append(runRow);
+
+    statusEl = mk("div", { fontSize: "12px", color: "#5f6368", minHeight: "16px" }, "Idle");
+    countEl = mk("span", { fontWeight: "600", color: "#188038" }, "0 rows");
+    const statusRow = mk("div", { display: "flex", justifyContent: "space-between", margin: "4px 0 8px" });
+    statusRow.append(statusEl, countEl);
+    body.append(statusRow);
+
+    const guardExport = (fn) => () => {
+      if (!state.rows.length) return status("Nothing to export — run first");
+      fn();
+    };
+    const exportRow = mk("div", { display: "flex", gap: "6px" });
+    const csvBtn = btn("CSV", "#188038");
+    const jsonBtn = btn("JSON", "#188038");
+    const copyBtn = btn("Copy", "#188038");
+    csvBtn.onclick = guardExport(() => downloadFile(toCSV(state.rows), "csv", "text/csv;charset=utf-8;"));
+    jsonBtn.onclick = guardExport(() => downloadFile(toJSON(state.rows), "json", "application/json"));
+    copyBtn.onclick = guardExport(async () => {
+      await navigator.clipboard.writeText(toCSV(state.rows));
+      status("Copied CSV to clipboard");
+    });
+    exportRow.append(csvBtn, jsonBtn, copyBtn);
+    body.append(exportRow);
+
+    document.body.appendChild(panel);
+  }
+
+  loadCfg().then(buildPanel);
 })();

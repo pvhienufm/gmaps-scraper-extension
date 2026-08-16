@@ -14,30 +14,37 @@ parsing, lat/lng from the place URL).
 2. Toggle **Developer mode** (top-right)
 3. Click **Load unpacked** → select this folder (`~/gmaps-scraper-extension`)
 4. Go to https://www.google.com/maps and search, e.g. `hotels in Da Lat`
-5. Click one of the two buttons at the top of the page
+5. Use the **config panel** that appears top-left
 
-Both auto-scroll the results feed to lazy-load listings, then download
-`gmaps-<timestamp>.csv` with columns: name, rating, reviews, category, price,
-address, phone, website, email, socials, hours, plus_code, lat, lng, url.
+Columns available: name, rating, reviews, category, price, address, phone,
+website, email, socials, hours, plus_code, lat, lng, url.
 
-## Two modes
+## Config panel
 
-- **⬇ Scrape (fast)** — reads the results feed only. Seconds. Reliable fields:
-  name, rating, reviews, category, price, coords. Address/phone/hours are often
-  blank here (Google doesn't put them in the card).
-- **⬇ Scrape + details + emails (green)** — after scrolling, opens each place and
-  reads the authoritative **address, phone, website, hours, plus code** from the
-  detail panel's `data-item-id` buttons, then fetches the business website in the
-  background to pull **email** (from `mailto:` links + page text, following one
-  "contact" page if needed) and **social** handles. Slow (~2–4 s/place) and takes
-  over the tab while running. Best for modest result counts.
+- **Max results** — cap how many listings to scrape.
+- **Fetch details** — open each place for authoritative address, phone, website,
+  hours, plus code (`data-item-id` buttons). Off = fast feed-only scrape.
+- **Fetch emails + socials** — background-fetch each business website and pull
+  email (from `mailto:` links + page text, following one "contact" page) and
+  social handles. Needs details on.
+- **Filters** — min rating, min reviews, only-with-website, **only WITHOUT
+  website** (lead-gen: businesses to sell a site to), only-with-phone.
+- **Export fields** — tick which columns land in the export.
+- **Start / Stop** — Stop halts scrolling/enrichment mid-run.
+- **Export** — CSV / JSON download or Copy CSV to clipboard, on the filtered rows.
+
+Config is remembered between runs via `chrome.storage.local`.
+
+Details mode is slow (~2–4 s/place) and takes over the tab while running; keep
+`Max results` modest.
 
 ## Permissions
 
-The green mode needs `host_permissions: <all_urls>` so the background service
-worker can fetch arbitrary business websites (content scripts can't read
-cross-origin bodies — CORS). Chrome shows this as "Read your data on all
-websites". Nothing is sent anywhere; fetches happen from your machine.
+- `storage` — remembers your panel config between runs.
+- `host_permissions: <all_urls>` — lets the background service worker fetch
+  arbitrary business websites for emails (content scripts can't read cross-origin
+  bodies — CORS). Chrome shows this as "Read your data on all websites". Nothing
+  is sent anywhere; fetches happen from your machine.
 
 ## Email limitations
 
@@ -53,12 +60,12 @@ update the selectors near the top of `content.js`: feed uses `Nv2PK`, `hfpxzc`,
 `MW4etd`, `UY7F9`, `W4Efsd`; the detail panel uses `data-item-id` hooks
 (`address`, `phone:tel:`, `authority`, `oloc`) plus `h1.DUwDvf` / `.t39EBf`.
 
-## Next steps (toward a sellable product)
+## Next steps
 
-- **Email enrichment** (#3): visit each website, regex emails + social handles —
-  the highest-value field, not available on Maps itself.
-- **Lead-gen filters**: min rating, min reviews, has-website / no-website.
-- **Freemium gate**: limit free exports to ~15 rows; unlock bulk + Sheets export
-  behind a license key checked against a tiny backend.
+- **Google Sheets export** — push results straight into a sheet (OAuth via
+  `chrome.identity`, or an Apps Script webhook).
+- **Results preview table** + select/deselect rows before export.
+- **Persist results** across tab reloads (currently config persists, rows don't).
+- **Reviews & photos** scraping for directory use.
 - Package for the Chrome Web Store (data-extraction extensions face review; keep a
   sideload `.zip` / Edge fallback).
